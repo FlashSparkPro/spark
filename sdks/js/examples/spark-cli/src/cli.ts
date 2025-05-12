@@ -58,6 +58,7 @@ const commands = [
 // Initialize Spark Wallet
 const walletMnemonic =
   "cctypical stereo dose party penalty decline neglect feel harvest abstract stage winter";
+const PUBLIC_KEY_LENGTH = 66;
 
 async function runCLI() {
   // Get network from environment variable
@@ -119,6 +120,7 @@ async function runCLI() {
   createinvoice <amount> <memo>                                       - Create a new lightning invoice
   payinvoice <invoice> <maxFeeSats>                                   - Pay a lightning invoice
   sendtransfer <amount> <receiverSparkAddress>                        - Send a spark transfer
+  batchsendtransfer <amount> <receiverSparkAddress> <count>           - Send multiple spark transfers in a single operation
   withdraw <amount> <onchainAddress> <exitSpeed(FAST|MEDIUM|SLOW)>    - Withdraw funds to an L1 address
   withdrawalfee <amount> <withdrawalAddress>                          - Get a fee estimate for a withdrawal (cooperative exit)
   lightningsendfee <invoice>                                          - Get a fee estimate for a lightning send
@@ -128,6 +130,7 @@ async function runCLI() {
 
   Token Holder Commands:
   transfertokens <tokenPubKey> <amount> <receiverSparkAddress>        - Transfer tokens
+  batchtransfertokens <tokenPubKey> <amount> <receiverPubKey1,receiverPubKey2,...> - Transfer tokens to multiple recipients in a single batch operation
 
   Token Issuer Commands:
   gettokenl1address                                                   - Get the L1 address for on-chain token operations
@@ -509,11 +512,64 @@ async function runCLI() {
             console.log("Please initialize a wallet first");
             break;
           }
+
+          const amountSats = parseInt(args[0]);
+          const receiverSparkAddress = args[1];
+
+          if (isNaN(amountSats) || amountSats < 0) {
+            console.log("Invalid amount or amount must be non-negative");
+            break;
+          }
+
+          if (receiverSparkAddress.length === 0) {
+            console.log("Invalid receiverSparkAddress");
+            break;
+          }
+
           const transfer = await wallet.transfer({
-            amountSats: parseInt(args[0]),
-            receiverSparkAddress: args[1],
+            amountSats: amountSats,
+            receiverSparkAddress: receiverSparkAddress,
           });
-          console.log(transfer);
+          console.log(
+            "Transfer Transaction ID: https://www.sparkscan.io/tx/" +
+              transfer.id,
+          );
+          break;
+        case "batchsendtransfer":
+          if (!wallet) {
+            console.log("Please initialize a wallet first");
+            break;
+          }
+
+          const batchAmountSats = parseInt(args[0]);
+          const batchReceiverSparkAddress = args[1];
+          const count = parseInt(args[2]);
+
+          if (isNaN(batchAmountSats) || batchAmountSats < 0) {
+            console.log("Invalid amount or amount must be non-negative");
+            break;
+          }
+
+          if (isNaN(count) || count < 0) {
+            console.log("Invalid count or count must be non-negative");
+            break;
+          }
+
+          if (batchReceiverSparkAddress.length === 0) {
+            console.log("Invalid receiverSparkAddress");
+            break;
+          }
+
+          for (let i = 0; i < count; i++) {
+            const transfer = await wallet.transfer({
+              amountSats: batchAmountSats,
+              receiverSparkAddress: batchReceiverSparkAddress,
+            });
+              console.log(
+                "Transfer Transaction ID: https://www.sparkscan.io/tx/" +
+                  transfer.id,
+              );
+          }
           break;
         case "transfertokens":
           if (!wallet) {
@@ -537,13 +593,78 @@ async function runCLI() {
               tokenAmount: tokenAmount,
               receiverSparkAddress: tokenReceiverPubKey,
             });
-            console.log("Transfer Transaction ID:", result);
+            console.log(
+              `Transfer Transaction ID: https://www.sparkscan.io/tx/${result}`,
+            );
           } catch (error) {
             let errorMsg = "Unknown error";
             if (error instanceof Error) {
               errorMsg = error.message;
             }
             console.error(`Failed to transfer tokens: ${errorMsg}`);
+          }
+          break;
+        case "batchtransfertokens":
+          if (!wallet) {
+            console.log("Please initialize a wallet first");
+            break;
+          }
+          if (args.length < 3) {
+            console.log(
+              "Usage: batchtransfertokens <tokenPubKey> <amount> <receiverPubKey1,receiverPubKey2,...>",
+            );
+            break;
+          }
+
+          const batchTokenPubKey = args[0];
+          const batchTokenAmount = BigInt(parseInt(args[1]));
+
+          const tokenReceiverAddresses = args[2].split(',').map(addr => addr.trim()).filter(addr => addr.length > 0);
+          if (batchTokenPubKey.length !== PUBLIC_KEY_LENGTH) {
+            console.log(`Invalid token public key: must be ${PUBLIC_KEY_LENGTH} characters long`);
+            break;
+          }
+
+          if (batchTokenAmount <= 0n) {
+            console.log("Invalid token amount: must be greater than 0");
+            break;
+          }
+
+          if (tokenReceiverAddresses.length === 0) {
+            console.log("No valid receiver addresses provided");
+            break;
+          }
+
+          const invalidAddresses = tokenReceiverAddresses.filter(addr => addr.length === 0);
+          if (invalidAddresses.length > 0) {
+            console.log("Invalid receiver addresses found: empty addresses are not allowed");
+            break;
+          }
+
+          try {
+            console.log(`Starting batch transfer of ${batchTokenAmount} tokens to ${tokenReceiverAddresses.length} recipients...`);
+            for (const receiverAddress of tokenReceiverAddresses) {
+              try {
+                const result = await wallet.transferTokens({
+                  tokenPublicKey: batchTokenPubKey,
+                  tokenAmount: batchTokenAmount,
+                  receiverSparkAddress: receiverAddress,
+                });
+                console.log(
+                  `✓ Transfer to ${receiverAddress} - Transaction ID: https://www.sparkscan.io/tx/${result}`,
+                );
+              } catch (transferError) {
+                console.error(`✗ Failed to transfer to ${receiverAddress}:`,
+                  transferError instanceof Error ? transferError.message : "Unknown error");
+              }
+            }
+            console.log("Batch transfer completed");
+          } catch (error) {
+            let errorMsg = "Unknown error";
+            if (error instanceof Error) {
+              errorMsg = error.message;
+            }
+            console.error(`Failed to process batch transfer: ${errorMsg}`);
           }
           break;
         case "withdraw":
